@@ -1,4 +1,4 @@
-
+﻿
 pipeline {
     agent any
 
@@ -50,7 +50,7 @@ pipeline {
                         $tag = "build-$env:BUILD_NUMBER"
                         $image = "localhost:5000/flask-python-app:$tag"
 
-                        $env:REGISTRY_PASSWORD | docker login localhost:5000 --username $env:REGISTRY_USER --password-stdin
+                        $env:REGISTRY_PASSWORD | docker login 127.0.0.1:5000 --username $env:REGISTRY_USER --password-stdin
                         if ($LASTEXITCODE -ne 0) {
                             throw "Registry login failed"
                         }
@@ -176,3 +176,5 @@ pipeline {
         }
     }
 }
+
+
