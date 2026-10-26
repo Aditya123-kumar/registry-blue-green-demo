@@ -49,6 +49,17 @@ pipeline {
                         $ErrorActionPreference = 'Stop'
                         $tag = "build-$env:BUILD_NUMBER"
                         $image = "localhost:5000/flask-python-app:$tag"
+Write-Host "=== Jenkins identity ==="
+whoami
+
+Write-Host "=== Docker context ==="
+docker context show
+
+Write-Host "=== Registry HTTPS test ==="
+curl.exe -k -sS -o NUL -w "HTTPS status=%{http_code}`n" https://localhost:5000/v2/
+if ($LASTEXITCODE -ne 0) {
+    throw "Registry HTTPS connectivity test failed"
+}
 
                         $env:REGISTRY_PASSWORD | docker login 127.0.0.1:5000 --username $env:REGISTRY_USER --password-stdin
                         if ($LASTEXITCODE -ne 0) {
