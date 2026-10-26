@@ -1,0 +1,8 @@
+# Local secrets and credentials
+.env
+*.pem
+*.key
+.htpasswd
+
+# Temporary files
+*.log
