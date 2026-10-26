@@ -4,7 +4,7 @@ pipeline {
 
     environment {
         IMAGE_NAME = 'localhost:5000/flask-python-app'
-        CONFIG_PATH = 'C:\Users\CEREBRENT PC\registry-rollback-demo\flask-proxy\default.conf'
+        CONFIG_PATH = 'C:/Users/CEREBRENT PC/registry-rollback-demo/flask-proxy/default.conf'
     }
 
     triggers {
