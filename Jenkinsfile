@@ -1,4 +1,3 @@
-
 pipeline {
     agent any
 
@@ -101,6 +100,15 @@ pipeline {
                         if ($status -ne '401' -and $status -ne '200') {
                             throw "Unexpected registry HTTPS status: $status"
                         }
+Write-Host "=== Docker registry protocol diagnostic ==="
+
+curl.exe -k -sS -o NUL -w "HTTPS status: %{http_code}`n" `
+    https://localhost:5000/v2/
+
+curl.exe -sS -o NUL -w "HTTP status: %{http_code}`n" `
+    http://localhost:5000/v2/
+
+docker info | Select-String -Pattern "Proxy|Insecure Registries"
 
                         Write-Host "=== Docker registry login ==="
                         $env:REGISTRY_PASSWORD |
