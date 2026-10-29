@@ -160,6 +160,8 @@ pipeline {
                 ]) {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
+                        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
 
                         $env:DOCKER_CONFIG = Join-Path `
                             $env:WORKSPACE ".docker-ci-$env:BUILD_NUMBER"
