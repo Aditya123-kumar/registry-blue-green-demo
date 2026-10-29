@@ -3,69 +3,65 @@ pipeline {
     agent any
 
     options {
-        disableConcurrentBuilds()
         timestamps()
+        skipDefaultCheckout(false)
     }
 
     environment {
-        REGISTRY   = 'localhost:5000'
         IMAGE_NAME = 'localhost:5000/flask-python-app'
-        TEST_PORT  = '18181'
     }
 
     stages {
         stage('Checkout and Build') {
             steps {
-                echo 'Building Nginx application...'
+                echo 'Building application image...'
 
                 powershell '''
                     $ErrorActionPreference = 'Stop'
 
-                    $tag = "build-$env:BUILD_NUMBER"
-                    $image = "$env:IMAGE_NAME`:$tag"
-                    $testName = "web-ci-test-$env:BUILD_NUMBER"
+                    $image = "$env:IMAGE_NAME`:build-$env:BUILD_NUMBER"
 
                     docker build -t $image .
                     if ($LASTEXITCODE -ne 0) {
                         throw "Docker build failed."
                     }
 
-                    try {
-                        docker run -d --name $testName `
-                            -p "127.0.0.1:$env:TEST_PORT`:80" $image
+                    $container = "registry-ci-test-$env:BUILD_NUMBER"
 
+                    try {
+                        docker run -d --name $container -p 127.0.0.1:18181:80 $image
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Test container failed to start."
+                            throw "Temporary container failed to start."
                         }
 
                         $healthy = $false
 
-                        for ($i = 0; $i -lt 20; $i++) {
+                        for ($i = 0; $i -lt 15; $i++) {
                             Start-Sleep -Seconds 2
 
                             try {
                                 $response = Invoke-WebRequest `
-                                    -Uri "http://localhost:$env:TEST_PORT/" `
-                                    -UseBasicParsing -TimeoutSec 3
+                                    -Uri "http://localhost:18181/" `
+                                    -TimeoutSec 3 `
+                                    -UseBasicParsing
 
                                 if ($response.StatusCode -eq 200) {
                                     $healthy = $true
                                     break
                                 }
-                            }
-                            catch {
-                                # Retry while Nginx starts.
+                            } catch {
+                                # Retry while Nginx starts
                             }
                         }
 
                         if (-not $healthy) {
-                            throw "Nginx health check failed."
+                            throw "Application health check failed."
                         }
 
                         Write-Host "Build and health check passed: $image"
                     }
                     finally {
-                        docker rm -f $testName 2>$null | Out-Null
+                        docker rm -f $container 2>$null | Out-Null
                     }
                 '''
             }
@@ -74,25 +70,16 @@ pipeline {
         stage('Registry Diagnostics') {
             steps {
                 powershell '''
-                    $env:NO_PROXY = 'localhost,127.0.0.1,::1'
-                    $env:no_proxy = $env:NO_PROXY
+                    $ErrorActionPreference = 'Stop'
 
-                    # Show proxy variable names and values for diagnosis.
-                    # Do not print credentials or passwords.
-                    Write-Host "=== Proxy environment ==="
+                    Write-Host "Checking registry HTTPS endpoint..."
 
-                    Get-ChildItem Env: |
-                        Where-Object { $_.Name -match 'proxy' } |
-                        ForEach-Object {
-                            Write-Host "$($_.Name)=$($_.Value)"
-                        }
+                    curl.exe -k -sS -o NUL `
+                        -w "Registry HTTP status: %{http_code}`n" `
+                        https://localhost:5000/v2/
 
-                    Write-Host "=== HTTPS registry response ==="
-                    curl.exe -k -i https://localhost:5000/v2/
-
-                    Write-Host "=== Docker daemon proxy settings ==="
-                    docker info 2>&1 |
-                        Select-String -Pattern 'Proxy|Insecure Registries'
+                    Write-Host "Docker daemon proxy configuration:"
+                    docker info | Select-String 'HTTP Proxy|HTTPS Proxy|No Proxy'
                 '''
             }
         }
@@ -109,55 +96,56 @@ pipeline {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
 
+                        if ([string]::IsNullOrWhiteSpace($env:REGISTRY_USERNAME)) {
+                            throw "Registry username was not supplied."
+                        }
+
+                        if ([string]::IsNullOrEmpty($env:REGISTRY_PASSWORD)) {
+                            throw "Registry password was not supplied."
+                        }
+
+                        Write-Host "Registry username: $env:REGISTRY_USERNAME"
+                        Write-Host "Password supplied: True"
+                        Write-Host "Password length: $($env:REGISTRY_PASSWORD.Length)"
+
+                        # Use a fresh Docker config for this build.
+                        $env:DOCKER_CONFIG = Join-Path `
+                            $env:WORKSPACE ".docker-ci-$env:BUILD_NUMBER"
+
+                        New-Item -ItemType Directory `
+                            -Force -Path $env:DOCKER_CONFIG | Out-Null
+
+                        # Prevent inherited proxy variables from affecting
+                        # local Docker CLI requests.
                         $env:NO_PROXY = 'localhost,127.0.0.1,::1'
                         $env:no_proxy = $env:NO_PROXY
+                        Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue
+                        Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue
+                        Remove-Item Env:http_proxy -ErrorAction SilentlyContinue
+                        Remove-Item Env:https_proxy -ErrorAction SilentlyContinue
 
-                        $env:HTTP_PROXY = ''
-                        $env:HTTPS_PROXY = ''
-                        $env:ALL_PROXY = ''
-                        $env:http_proxy = ''
-                        $env:https_proxy = ''
-                        $env:all_proxy = ''
+                        Write-Host "Logging in to private registry..."
+
+                        $env:REGISTRY_PASSWORD |
+                            docker login localhost:5000 `
+                                --username $env:REGISTRY_USERNAME `
+                                --password-stdin
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Registry login failed. Check credential and daemon protocol."
+                        }
 
                         $image = "$env:IMAGE_NAME`:build-$env:BUILD_NUMBER"
-                        $dockerConfig = Join-Path $env:WORKSPACE '.docker-ci'
 
-                        $env:DOCKER_CONFIG = $dockerConfig
-                        New-Item -ItemType Directory -Force `
-                            -Path $dockerConfig | Out-Null
+                        Write-Host "Pushing image: $image"
 
-                        try {
-                            Write-Host "Logging in to HTTPS registry..."
+                        docker push $image
 
-                            $env:REGISTRY_PASSWORD |
-                                docker login localhost:5000 --username $env:REGISTRY_USERNAME --password-stdin
-
-                            if ($LASTEXITCODE -ne 0) {
-                                throw "Registry login failed."
-                            }
-
-                            Write-Host "Registry login succeeded."
-
-                            docker push $image
-                            if ($LASTEXITCODE -ne 0) {
-                                throw "Image push failed: $image"
-                            }
-
-                            Write-Host "Image pushed: $image"
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Docker image push failed."
                         }
-                        finally {
-                            docker logout localhost:5000 2>$null |
-                                Out-Null
 
-                            Remove-Item Env:REGISTRY_PASSWORD `
-                                -ErrorAction SilentlyContinue
-
-                            Remove-Item Env:DOCKER_CONFIG `
-                                -ErrorAction SilentlyContinue
-
-                            Remove-Item -Recurse -Force $dockerConfig `
-                                -ErrorAction SilentlyContinue
-                        }
+                        Write-Host "Private registry push successful: $image"
                     '''
                 }
             }
@@ -165,16 +153,14 @@ pipeline {
 
         stage('Deployment Status') {
             steps {
-                echo 'Build and registry push completed.'
-                echo 'Blue-green deployment will be configured separately.'
-                echo 'Existing application has not been replaced.'
+                echo 'Image successfully pushed. Deployment automation is the next step.'
             }
         }
     }
 
     post {
         success {
-            echo 'SUCCESS: Build, health check and registry push passed.'
+            echo 'SUCCESS: Build, health check, and registry push completed.'
         }
 
         failure {
