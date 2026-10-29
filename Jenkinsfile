@@ -111,8 +111,8 @@ curl.exe -sS -o NUL -w "HTTP status: %{http_code}`n" `
 docker info | Select-String -Pattern "Proxy|Insecure Registries"
 
                         Write-Host "=== Docker registry login ==="
-                        $env:REGISTRY_PASSWORD |
-                            $env:REGISTRY_PASSWORD | docker login https://localhost:5000 --username $env:REGISTRY_USERNAME --password-stdin
+                        $registryPassword = $env:REGISTRY_PASSWORD
+$registryPassword | & docker login https://localhost:5000 --username $env:REGISTRY_USERNAME --password-stdin
 
                         if ($LASTEXITCODE -ne 0) {
                             throw "Docker login failed. Credentials were not printed."
