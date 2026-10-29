@@ -85,7 +85,7 @@ pipeline {
 
                         Write-Host "=== Docker registry login ==="
                         $env:REGISTRY_PASSWORD |
-                            docker login localhost:5000 --username $env:REGISTRY_USER --password-stdin
+                            docker --debug login https://localhost:5000 --username $env:REGISTRY_USER --password-stdin
 
                         if ($LASTEXITCODE -ne 0) {
                             throw "Docker login failed. Credentials were not printed."
