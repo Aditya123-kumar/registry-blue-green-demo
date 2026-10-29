@@ -1,3 +1,4 @@
+
 pipeline {
     agent any
 
@@ -72,11 +73,29 @@ pipeline {
                         Write-Host "HOME=$env:HOME"
                         Write-Host "DOCKER_CONFIG=$env:DOCKER_CONFIG"
 
+                        Write-Host "=== Credential binding check ==="
+                        Write-Host "Registry username present: $([bool]$env:REGISTRY_USER)"
+                        Write-Host "Registry password present: $([bool]$env:REGISTRY_PASSWORD)"
+
+                        if ([string]::IsNullOrWhiteSpace($env:REGISTRY_USER) -or
+                            [string]::IsNullOrEmpty($env:REGISTRY_PASSWORD)) {
+                            throw "Registry credentials are missing from Jenkins binding."
+                        }
+
+                        Write-Host "=== Docker executable ==="
+                        (Get-Command docker).Source
+
+                        docker version --format '{{.Client.Version}}'
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Cannot read Docker client version"
+                        }
+
                         Write-Host "=== Registry HTTPS certificate test ==="
                         $status = curl.exe -sS -o NUL -w "%{http_code}" https://127.0.0.1:5000/v2/
                         if ($LASTEXITCODE -ne 0) {
                             throw "HTTPS connection/certificate verification failed for https://127.0.0.1:5000/v2/"
                         }
+
                         Write-Host "HTTPS status=$status"
 
                         if ($status -ne '401' -and $status -ne '200') {
@@ -168,6 +187,7 @@ pipeline {
                             } catch {
                                 Start-Sleep -Seconds 2
                             }
+
                             Start-Sleep -Seconds 1
                         }
 
@@ -204,10 +224,12 @@ pipeline {
                         Write-Host "Application URL: $proxyUrl"
                     } catch {
                         $failure = $_
+
                         if ($switched) {
                             Write-Host "Restoring previous proxy configuration..."
                             Set-Content -Path $configPath -Value $originalConfig -Encoding ascii
                             docker exec flask-proxy nginx -t
+
                             if ($LASTEXITCODE -eq 0) {
                                 docker exec flask-proxy nginx -s reload
                             }
