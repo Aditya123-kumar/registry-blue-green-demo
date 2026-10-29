@@ -83,7 +83,10 @@ pipeline {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
 
-                        $image = "$env:IMAGE_NAME`:build-$env:BUILD_NUMBER"
+$env:NO_PROXY = "localhost,127.0.0.1,::1"
+$env:no_proxy = $env:NO_PROXY
+
+$image = "$env:IMAGE_NAME`:build-$env:BUILD_NUMBER"
 
                         $env:DOCKER_CONFIG = Join-Path $env:WORKSPACE '.docker-ci'
                         New-Item -ItemType Directory -Force `
