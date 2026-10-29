@@ -19,7 +19,7 @@ pipeline {
                 powershell '''
                     $ErrorActionPreference = 'Stop'
                     $tag = "build-$env:BUILD_NUMBER"
-                    $image = "localhost:5000/flask-python-app:$tag"
+                    $image = "${env:IMAGE_NAME}:$tag"
 
                     docker build -t $image .\\flask-app
                     if ($LASTEXITCODE -ne 0) {
@@ -48,27 +48,49 @@ pipeline {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
                         $tag = "build-$env:BUILD_NUMBER"
-                        $image = "localhost:5000/flask-python-app:$tag"
-Write-Host "=== Jenkins identity ==="
-whoami
+                        $image = "${env:IMAGE_NAME}:$tag"
 
-Write-Host "=== Docker context ==="
-docker context show
+                        Write-Host "=== Jenkins identity ==="
+                        whoami
 
-Write-Host "=== Registry HTTPS test ==="
-curl.exe -k -sS -o NUL -w "HTTPS status=%{http_code}`n" https://localhost:5000/v2/
-if ($LASTEXITCODE -ne 0) {
-    throw "Registry HTTPS connectivity test failed"
-}
-
-                        $env:REGISTRY_PASSWORD | docker login localhost:5000 --username $env:REGISTRY_USER --password-stdin
+                        Write-Host "=== Docker context ==="
+                        docker context show
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Registry login failed"
+                            throw "Cannot read Docker context"
                         }
 
+                        Write-Host "=== Docker environment ==="
+                        Get-ChildItem Env: |
+                            Where-Object {
+                                $_.Name -match '^(DOCKER_HOST|DOCKER_CONTEXT|DOCKER_CONFIG|HTTP_PROXY|HTTPS_PROXY|NO_PROXY)$'
+                            } |
+                            ForEach-Object {
+                                Write-Host "$($_.Name)=$($_.Value)"
+                            }
+
+                        Write-Host "=== Registry HTTPS test ==="
+                        $status = curl.exe -k -sS -o NUL -w "%{http_code}" https://localhost:5000/v2/
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Cannot connect to registry over HTTPS"
+                        }
+                        Write-Host "HTTPS status=$status"
+
+                        if ($status -ne '401' -and $status -ne '200') {
+                            throw "Unexpected registry HTTPS status: $status"
+                        }
+
+                        Write-Host "=== Docker registry login ==="
+                        $env:REGISTRY_PASSWORD |
+                            docker login localhost:5000 --username $env:REGISTRY_USER --password-stdin
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Docker login failed. Check daemon HTTPS/TLS diagnostics; credentials were not printed."
+                        }
+
+                        Write-Host "=== Push image ==="
                         docker push $image
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Image push failed"
+                            throw "Image push failed: $image"
                         }
 
                         Write-Host "Pushed image: $image"
@@ -84,7 +106,7 @@ if ($LASTEXITCODE -ne 0) {
 
                     $configPath = $env:CONFIG_PATH
                     $tag = "build-$env:BUILD_NUMBER"
-                    $image = "localhost:5000/flask-python-app:$tag"
+                    $image = "${env:IMAGE_NAME}:$tag"
                     $proxyUrl = "http://localhost:8083"
                     $switched = $false
                     $originalConfig = Get-Content $configPath -Raw
@@ -115,6 +137,10 @@ if ($LASTEXITCODE -ne 0) {
                         }
 
                         $existing = docker ps -a --format "{{.Names}}"
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Cannot list existing containers"
+                        }
+
                         if ($existing -contains $container) {
                             docker rm -f $container
                             if ($LASTEXITCODE -ne 0) {
@@ -148,19 +174,22 @@ if ($LASTEXITCODE -ne 0) {
                         $newConfig = $originalConfig -replace 'host\\.docker\\.internal:\\d+', "host.docker.internal:$targetPort"
                         Set-Content -Path $configPath -Value $newConfig -Encoding ascii
 
-                        $switched = $true
-
                         docker exec flask-proxy nginx -t
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Proxy configuration validation failed"
+                            Set-Content -Path $configPath -Value $originalConfig -Encoding ascii
+                            throw "Proxy configuration validation failed; original config restored."
                         }
 
                         docker exec flask-proxy nginx -s reload
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Proxy reload failed"
+                            Set-Content -Path $configPath -Value $originalConfig -Encoding ascii
+                            docker exec flask-proxy nginx -s reload
+                            throw "Proxy reload failed; original config restored."
                         }
 
+                        $switched = $true
                         $live = Invoke-RestMethod "$proxyUrl/health" -TimeoutSec 5
+
                         if ($live.status -ne 'healthy' -or $live.version -ne $tag) {
                             throw "Live proxy verification failed"
                         }
@@ -187,5 +216,3 @@ if ($LASTEXITCODE -ne 0) {
         }
     }
 }
-
-
