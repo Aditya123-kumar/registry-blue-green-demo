@@ -8,7 +8,7 @@ pipeline {
     }
 
     environment {
-        REGISTRY   = 'https://localhost:5000'
+        REGISTRY   = 'localhost:5000'
         IMAGE_NAME = 'localhost:5000/flask-python-app'
         TEST_PORT  = '18181'
     }
@@ -16,6 +16,8 @@ pipeline {
     stages {
         stage('Checkout and Build') {
             steps {
+                echo 'Building the Nginx application image...'
+
                 bat 'docker version'
 
                 powershell '''
@@ -53,16 +55,17 @@ pipeline {
                                     $healthy = $true
                                     break
                                 }
-                            } catch {
-                                # Wait for Nginx to become ready.
+                            }
+                            catch {
+                                # Nginx may still be starting.
                             }
                         }
 
                         if (-not $healthy) {
-                            throw "Nginx HTTP health check failed."
+                            throw "Nginx health check failed."
                         }
 
-                        Write-Host "Build and Nginx health check passed: $image"
+                        Write-Host "Build and health check passed: $image"
                     }
                     finally {
                         docker rm -f $testName 2>$null | Out-Null
@@ -83,23 +86,35 @@ pipeline {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
 
-$env:NO_PROXY = "localhost,127.0.0.1,::1"
-$env:no_proxy = $env:NO_PROXY
+                        # Bypass proxies for the local registry.
+                        $env:NO_PROXY = 'localhost,127.0.0.1,::1'
+                        $env:no_proxy = $env:NO_PROXY
 
-$image = "$env:IMAGE_NAME`:build-$env:BUILD_NUMBER"
+                        $env:HTTP_PROXY = ''
+                        $env:HTTPS_PROXY = ''
+                        $env:ALL_PROXY = ''
+                        $env:http_proxy = ''
+                        $env:https_proxy = ''
+                        $env:all_proxy = ''
 
-                        $env:DOCKER_CONFIG = Join-Path $env:WORKSPACE '.docker-ci'
+                        $image = "$env:IMAGE_NAME`:build-$env:BUILD_NUMBER"
+
+                        # Keep Docker authentication separate for this job.
+                        $dockerConfig = Join-Path $env:WORKSPACE '.docker-ci'
+                        $env:DOCKER_CONFIG = $dockerConfig
+
                         New-Item -ItemType Directory -Force `
-                            -Path $env:DOCKER_CONFIG | Out-Null
+                            -Path $dockerConfig | Out-Null
 
                         try {
+                            # Use HTTPS explicitly for the registry.
                             $env:REGISTRY_PASSWORD |
-                                docker login localhost:5000 `
+                                docker login https://localhost:5000 `
                                     --username $env:REGISTRY_USERNAME `
                                     --password-stdin
 
                             if ($LASTEXITCODE -ne 0) {
-                                throw "Private registry login failed."
+                                throw "Registry login failed. Check registry HTTPS, certificate trust and proxy settings."
                             }
 
                             docker push $image
@@ -111,12 +126,14 @@ $image = "$env:IMAGE_NAME`:build-$env:BUILD_NUMBER"
                         }
                         finally {
                             docker logout localhost:5000 2>$null | Out-Null
+
                             Remove-Item Env:REGISTRY_PASSWORD `
                                 -ErrorAction SilentlyContinue
+
                             Remove-Item Env:DOCKER_CONFIG `
                                 -ErrorAction SilentlyContinue
-                            Remove-Item -Recurse -Force `
-                                (Join-Path $env:WORKSPACE '.docker-ci') `
+
+                            Remove-Item -Recurse -Force $dockerConfig `
                                 -ErrorAction SilentlyContinue
                         }
                     '''
@@ -126,18 +143,21 @@ $image = "$env:IMAGE_NAME`:build-$env:BUILD_NUMBER"
 
         stage('Deployment Status') {
             steps {
-                echo 'Build and registry push are complete. Blue-green deployment has not been run by this pipeline yet.'
+                echo 'Registry push stage passed. Blue-green deployment is not yet automated.'
+                echo 'The existing application has not been replaced by this pipeline.'
             }
         }
     }
 
     post {
         success {
-            echo 'Build, health check and registry push completed successfully.'
+            echo 'SUCCESS: Image built, tested and pushed to the private registry.'
         }
+
         failure {
-            echo 'Pipeline failed. Inspect the first failing stage in Console Output.'
+            echo 'FAILED: Check the first failing stage in Console Output.'
         }
+
         always {
             echo 'Pipeline execution finished.'
         }
