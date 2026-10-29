@@ -75,7 +75,7 @@ pipeline {
                         Write-Host "=== Registry HTTPS certificate test ==="
                         $status = curl.exe -sS -o NUL -w "%{http_code}" https://127.0.0.1:5000/v2/
                         if ($LASTEXITCODE -ne 0) {
-                            throw "HTTPS connection/certificate verification failed for https://127.0.0.1:5000/v2/
+                            throw "HTTPS connection/certificate verification failed for https://127.0.0.1:5000/v2/"
                         }
                         Write-Host "HTTPS status=$status"
 
