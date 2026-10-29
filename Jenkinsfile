@@ -1,4 +1,3 @@
-
 pipeline {
     agent any
 
@@ -68,10 +67,15 @@ pipeline {
                                 Write-Host "$($_.Name)=$($_.Value)"
                             }
 
-                        Write-Host "=== Registry HTTPS test ==="
-                        $status = curl.exe -k -sS -o NUL -w "%{http_code}" https://localhost:5000/v2/
+                        Write-Host "=== Docker config paths ==="
+                        Write-Host "USERPROFILE=$env:USERPROFILE"
+                        Write-Host "HOME=$env:HOME"
+                        Write-Host "DOCKER_CONFIG=$env:DOCKER_CONFIG"
+
+                        Write-Host "=== Registry HTTPS certificate test ==="
+                        $status = curl.exe -sS -o NUL -w "%{http_code}" https://localhost:5000/v2/
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Cannot connect to registry over HTTPS"
+                            throw "HTTPS connection/certificate verification failed for https://localhost:5000/v2/"
                         }
                         Write-Host "HTTPS status=$status"
 
@@ -84,7 +88,7 @@ pipeline {
                             docker login localhost:5000 --username $env:REGISTRY_USER --password-stdin
 
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Docker login failed. Check daemon HTTPS/TLS diagnostics; credentials were not printed."
+                            throw "Docker login failed. Credentials were not printed."
                         }
 
                         Write-Host "=== Push image ==="
