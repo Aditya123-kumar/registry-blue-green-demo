@@ -73,9 +73,9 @@ pipeline {
                         Write-Host "DOCKER_CONFIG=$env:DOCKER_CONFIG"
 
                         Write-Host "=== Registry HTTPS certificate test ==="
-                        $status = curl.exe -sS -o NUL -w "%{http_code}" https://localhost:5000/v2/
+                        $status = curl.exe -sS -o NUL -w "%{http_code}" https://127.0.0.1:5000/v2/
                         if ($LASTEXITCODE -ne 0) {
-                            throw "HTTPS connection/certificate verification failed for https://localhost:5000/v2/"
+                            throw "HTTPS connection/certificate verification failed for https://127.0.0.1:5000/v2/
                         }
                         Write-Host "HTTPS status=$status"
 
@@ -85,7 +85,7 @@ pipeline {
 
                         Write-Host "=== Docker registry login ==="
                         $env:REGISTRY_PASSWORD |
-                            docker --debug login https://localhost:5000 --username $env:REGISTRY_USER --password-stdin
+                            docker login https://127.0.0.1:5000 --username $env:REGISTRY_USER --password-stdin
 
                         if ($LASTEXITCODE -ne 0) {
                             throw "Docker login failed. Credentials were not printed."
