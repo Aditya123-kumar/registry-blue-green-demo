@@ -130,9 +130,7 @@ pipeline {
                             Write-Host "Logging in to HTTPS registry..."
 
                             $env:REGISTRY_PASSWORD |
-                                docker login https://localhost:5000 `
-                                    --username $env:REGISTRY_USERNAME `
-                                    --password-stdin
+                                docker login localhost:5000 --username $env:REGISTRY_USERNAME --password-stdin
 
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Registry login failed."
