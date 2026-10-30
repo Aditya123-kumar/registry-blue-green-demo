@@ -1,74 +1,54 @@
-
 pipeline {
     agent any
 
     options {
         timestamps()
-        disableConcurrentBuilds()
     }
 
     environment {
         REGISTRY_URL = 'localhost:5000'
         IMAGE_NAME   = 'localhost:5000/flask-python-app'
-        CONTAINER_NAME = 'registry-blue-green-app'
-        APP_PORT     = '8098'
+        REGISTRY_CREDENTIALS = 'registry-creds-v2'
     }
 
     stages {
+
         stage('Checkout and Build') {
             steps {
                 echo 'Building application image...'
 
                 powershell '''
-                    $ErrorActionPreference = 'Stop'
+                    $ErrorActionPreference = "Stop"
 
-                    $tag = "build-$env:BUILD_NUMBER"
-                    $image = "$env:IMAGE_NAME`:$tag"
+                    $ImageTag = "$env:IMAGE_NAME`:build-$env:BUILD_NUMBER"
 
-                    docker build -t $image .
+                    docker build -t $ImageTag .
 
                     if ($LASTEXITCODE -ne 0) {
-                        throw "Docker build failed"
+                        throw "Docker image build failed."
                     }
 
-                    $container = "jenkins-health-$env:BUILD_NUMBER"
+                    $ContainerName = "jenkins-health-$env:BUILD_NUMBER"
+
+                    docker run -d --name $ContainerName -p 18181:80 $ImageTag
+
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Temporary application container failed to start."
+                    }
 
                     try {
-                        docker run -d --name $container -p 127.0.0.1:18181:80 $image
+                        Start-Sleep -Seconds 5
 
-                        if ($LASTEXITCODE -ne 0) {
-                            throw "Temporary container failed to start"
+                        $Response = curl.exe -sS -o NUL -w "%{http_code}" http://localhost:18181/
+
+                        if ($LASTEXITCODE -ne 0 -or $Response -ne "200") {
+                            throw "Application health check failed. HTTP status: $Response"
                         }
 
-                        $healthy = $false
-
-                        for ($i = 0; $i -lt 10; $i++) {
-                            Start-Sleep -Seconds 2
-
-                            try {
-                                $response = Invoke-WebRequest `
-                                    -Uri 'http://127.0.0.1:18181/' `
-                                    -UseBasicParsing `
-                                    -TimeoutSec 5
-
-                                if ($response.StatusCode -eq 200) {
-                                    $healthy = $true
-                                    break
-                                }
-                            }
-                            catch {
-                                # Retry while Nginx starts
-                            }
-                        }
-
-                        if (-not $healthy) {
-                            throw "Application health check failed"
-                        }
-
-                        Write-Host "Build and health check passed: $image"
+                        Write-Host "Build and health check passed: $ImageTag"
                     }
                     finally {
-                        docker rm -f $container 2>$null | Out-Null
+                        docker rm -f $ContainerName
                     }
                 '''
             }
@@ -76,32 +56,28 @@ pipeline {
 
         stage('Registry Diagnostics') {
             steps {
-                echo 'Checking registry HTTPS endpoint...'
+                echo 'Checking registry connectivity and Docker environment...'
 
                 powershell '''
-                    $ErrorActionPreference = 'Stop'
+                    Write-Host "=== Docker Context ==="
+                    docker context show
 
-                    $result = & curl.exe -k -sS -o NUL -w "%{http_code}" `
-                        "https://$env:REGISTRY_URL/v2/"
+                    Write-Host "=== Docker Server ==="
+                    docker version --format "Server: {{.Server.Version}}"
 
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "Cannot connect to registry over HTTPS"
+                    Write-Host "=== Registry HTTPS test ==="
+                    curl.exe -k -sS -o NUL -w "HTTPS status: %{http_code}`n" https://$env:REGISTRY_URL/v2/
+
+                    Write-Host "=== Registry HTTP test ==="
+                    curl.exe -sS -o NUL -w "HTTP status: %{http_code}`n" http://$env:REGISTRY_URL/v2/
+
+                    Write-Host "=== Proxy variables ==="
+                    Get-ChildItem Env: | Where-Object {
+                        $_.Name -match 'proxy'
+                    } | ForEach-Object {
+                        Write-Host "$($_.Name)=$($_.Value)"
                     }
-
-                    Write-Host "Registry HTTP status: $result"
-
-                    if ($result -notin @('200', '401')) {
-                        throw "Unexpected registry response: $result"
-                    }
-
-                    Write-Host "Registry endpoint is reachable."
                 '''
-            }
-        }
-
-        stage('Test Registry Credentials Directly') {
-            steps {
-                echo 'Docker login will validate registry credentials.'
             }
         }
 
@@ -115,41 +91,50 @@ pipeline {
                     )
                 ]) {
                     powershell '''
-                        $ErrorActionPreference = 'Stop'
+                        $ErrorActionPreference = "Stop"
 
-                        $tag = "build-$env:BUILD_NUMBER"
-                        $image = "$env:IMAGE_NAME`:$tag"
+                        # Bypass proxy for local registry
+                        $env:NO_PROXY = "localhost,127.0.0.1"
+                        $env:no_proxy = "localhost,127.0.0.1"
 
-                        # Use a fresh Docker config for this build.
-                        $dockerConfig = Join-Path $env:WORKSPACE ".docker-ci-$env:BUILD_NUMBER"
-                        New-Item -ItemType Directory -Force -Path $dockerConfig | Out-Null
-                        $env:DOCKER_CONFIG = $dockerConfig
+                        # Clear proxy variables for this process
+                        $env:HTTP_PROXY = ""
+                        $env:HTTPS_PROXY = ""
+                        $env:ALL_PROXY = ""
+                        $env:http_proxy = ""
+                        $env:https_proxy = ""
+                        $env:all_proxy = ""
 
-                        try {
-                            $env:REGISTRY_PASSWORD |
-                                docker login $env:REGISTRY_URL `
-                                    --username $env:REGISTRY_USERNAME `
-                                    --password-stdin
+                        # Use a separate Docker config for this Jenkins build
+                        $env:DOCKER_CONFIG = Join-Path $env:WORKSPACE ".docker-ci-$env:BUILD_NUMBER"
+                        New-Item -ItemType Directory -Force -Path $env:DOCKER_CONFIG | Out-Null
 
-                            if ($LASTEXITCODE -ne 0) {
-                                throw "Docker registry login failed. Check Jenkins credential registry-creds-v2."
-                            }
+                        Write-Host "Logging in to private Docker registry..."
 
-                            Write-Host "Docker registry login succeeded."
+                        $env:REGISTRY_PASSWORD |
+                            docker login $env:REGISTRY_URL `
+                                --username $env:REGISTRY_USERNAME `
+                                --password-stdin
 
-                            docker push $image
-
-                            if ($LASTEXITCODE -ne 0) {
-                                throw "Docker image push failed: $image"
-                            }
-
-                            Write-Host "Image pushed successfully: $image"
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Docker registry login failed."
                         }
-                        finally {
-                            docker logout $env:REGISTRY_URL 2>$null | Out-Null
-                            Remove-Item Env:DOCKER_CONFIG -ErrorAction SilentlyContinue
-                            Remove-Item -Recurse -Force $dockerConfig -ErrorAction SilentlyContinue
+
+                        Write-Host "Registry login successful."
+
+                        $ImageTag = "$env:IMAGE_NAME`:build-$env:BUILD_NUMBER"
+
+                        Write-Host "Pushing image: $ImageTag"
+
+                        docker push $ImageTag
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Docker image push failed."
                         }
+
+                        Write-Host "Image pushed successfully: $ImageTag"
+
+                        docker logout $env:REGISTRY_URL
                     '''
                 }
             }
@@ -157,19 +142,19 @@ pipeline {
 
         stage('Deployment Status') {
             steps {
-                echo 'Image build and registry push completed.'
-                echo 'Automatic deployment is not configured in this pipeline yet.'
+                echo 'Image build, health check and private registry push completed successfully.'
+                echo 'Next step: configure blue-green deployment.'
             }
         }
     }
 
     post {
         success {
-            echo 'SUCCESS: Image built, health-checked, and pushed to the private registry.'
+            echo 'SUCCESS: Jenkins pipeline completed.'
         }
 
         failure {
-            echo 'FAILED: Check the first failed stage in the Console Output.'
+            echo 'FAILED: Check the first failed stage in Console Output.'
         }
 
         always {
